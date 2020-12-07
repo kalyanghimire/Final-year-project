@@ -23,7 +23,7 @@ from sklearn.preprocessing import StandardScaler
 
 def get_data():
 
-	df = pd.read_csv('AMZN.csv')
+	df = pd.read_csv('nabil.csv')
 	print(df.shape)
 	return df.values #.values only returns the numpy array
 
@@ -84,9 +84,9 @@ def test_action_chart(action,string):
 	fig, ax = plt.subplots(figsize=(20, 10))
 	colors = {0:'red', 1:'blue', 2:'green'}
 	if string=="train":
-		plt.ylim(100, 300)
+		plt.ylim(150, 900)
 	else:
-		plt.ylim(500,900)
+		plt.ylim(1100,600)
 	ax.plot(flat_list)
 	ax.scatter(My_list,df['flat_list'], c=df['action'].apply(lambda x: colors[x]),s=80)
 	plt.show()
@@ -251,11 +251,12 @@ class DQNAgent(object):
         
         self.gamma = 0.95    # discount rate
         self.epsilon = 1 # exploration rate
-        self.epsilon_min = 0.001
+        self.epsilon_min = 0.08
         self.epsilon_decay = 0.99 # change this to 0.999
         self.batch_size = 32
         self.train_start = 2000
         self.lost=[]
+        self.accuracy=[]
 
         self.model = OurModel(input_shape=self.state_size, action_space = self.action_size)
 
@@ -318,7 +319,8 @@ class DQNAgent(object):
 
 
     	history=self.model.fit(state, target, batch_size=self.batch_size, verbose=0,epochs=1)
-    	self.lost.extend(history.history['accuracy'])
+    	self.accuracy.extend(history.history['accuracy'])
+    	self.lost.extend(history.history['loss'])
 
 
 
@@ -333,6 +335,7 @@ class DQNAgent(object):
     def save(self, name):
         self.model.save(name)
 
+accuracy_model=[]
 
 loss_model=[]
 action_test=[]
@@ -342,6 +345,7 @@ def play_one_episode(agent, env, is_train,e):
 	action_test=[]
 	state = scaler.transform([state])
 	done = False
+	episode_reward=0
 	
 
 	while not done:
@@ -349,25 +353,30 @@ def play_one_episode(agent, env, is_train,e):
 		state
 		next_state, reward, done, info = env.step(action)
 		next_state = scaler.transform([next_state])
-		if is_train == 'train':
-			
-			history=agent.replay(state,action,reward,next_state,done)
-			agent.remember(state,action,reward,next_state,done)
+		history=agent.replay(state,action,reward,next_state,done)
+		agent.remember(state,action,reward,next_state,done)
 		
 		action_test.append(action)
+		episode_reward+=reward
+
 
 		state=next_state
 
 			
 
 
+
 		if done==1 and e>=2 and is_train=='train': 
 			n = len(agent.lost)
+			m = len(agent.accuracy)
+			get_sum_accuracy=sum(agent.accuracy)
 			get_sum = sum(agent.lost)
 			mean=get_sum/n 
+			mean_accuracy=get_sum_accuracy/n
 			agent.lost=[]
+			agent.accuracy=[]
 			loss_model.append(mean)
-			#print(agent.lost)
+			accuracy_model.append(mean_accuracy)
 
 	action_test.append(action)
 
@@ -377,13 +386,13 @@ def play_one_episode(agent, env, is_train,e):
 
 
 
-	return {'info': info['cur_val'], 'loss':loss_model, 'action_test':action_test}
+	return {'info': info['cur_val'], 'loss':loss_model, 'action_test':action_test,'episode_reward':episode_reward,'accuracy':accuracy_model}
 
 if __name__ == '__main__':
 
 	models_folder = 'linear_rl_trader_models'
 	rewards_folder = 'linear_rl_trader_rewards'
-	num_episodes = 50
+	num_episodes = 80
 	
 	initial_investment = 2000
 
@@ -418,12 +427,12 @@ if __name__ == '__main__':
 
 
 	if args.mode == 'test': 
-		num_episodes = 1
+		num_episodes = 4
 		agent.load(f'{models_folder}')
 
 		env = MultiStockEnv(test_data,test_data_nepse, initial_investment)
 
-		agent_epsilon = 0.01
+		agent_epsilon = 0.08
 
 		for e in range (num_episodes):
 			t0 = datetime.now()
@@ -450,7 +459,7 @@ if __name__ == '__main__':
 			t0 = datetime.now()
 			val = play_one_episode(agent,env,args.mode,e)
 			dt = datetime.now() - t0
-			print(f"episode: {e+1}/{num_episodes}, episode end value: {val['info']:.2f},duration:{dt}")
+			print(f"episode: {e+1}/{num_episodes}, episode end value: {val['info']:.2f},duration:{dt},accuracy is:{val['accuracy']},loss is:{val['loss']} ")
 			portfolio_value.append(val['info'])
 			if (e+1) % 10==0:
 				test_action_chart(val['action_test'],"train")
@@ -464,7 +473,7 @@ if __name__ == '__main__':
 		agent.save(f'{models_folder}')
 			
 		np.save(f'{rewards_folder}/{args.mode}.npy', portfolio_value)
-		agent_epsilon = 0.01
+		agent_epsilon = 0.08
 		num_episodes = 4
 		args.mode = 'test'
 		env = MultiStockEnv(test_data,test_data_nepse, initial_investment)
@@ -480,8 +489,16 @@ if __name__ == '__main__':
 
 		print("The plot for accuracy is ")
 
+		plt.plot(val['accuracy'])
+
+		plt.show()
+		savefig('accuracy.png')
+
+		print("The plot for loss is ")
+
 		plt.plot(val['loss'])
 		plt.show()
+		savefig('loss.png')
 
 
 
