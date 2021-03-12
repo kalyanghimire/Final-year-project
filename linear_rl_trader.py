@@ -3,6 +3,7 @@ import pandas as pd
 import matplotlib.pyplot as plt 
 import random
 from sklearn.model_selection import train_test_split
+from google.colab import files
 
 
 from collections import deque
@@ -32,6 +33,13 @@ def get_nepse_data():
 	print(df.shape)
 	return df.values
 
+def get_new_data():
+	df= pd.read_csv('nabil_new.csv')
+	return df.values
+
+def get_new_nepse():
+	df=pd.read_csv('nepse_new.csv')
+	return df.values
 
 def get_chart():
 
@@ -62,6 +70,7 @@ def get_chart():
 def test_action_chart(action,string):
 	data=get_data()
 	train_data, test_data= train_test_split(data, test_size=0.5,random_state = 42,shuffle=False)
+	#test_data=get_new_data()
 	flat_list=[]
 	if string == "test":
 		for sublist in test_data:
@@ -84,9 +93,9 @@ def test_action_chart(action,string):
 	fig, ax = plt.subplots(figsize=(20, 10))
 	colors = {0:'red', 1:'blue', 2:'green'}
 	if string=="train":
-		plt.ylim(150, 900)
+		plt.ylim(100,900)
 	else:
-		plt.ylim(1100,600)
+		plt.ylim(450,2500)
 	ax.plot(flat_list)
 	ax.scatter(My_list,df['flat_list'], c=df['action'].apply(lambda x: colors[x]),s=80)
 	plt.show()
@@ -95,17 +104,20 @@ def test_action_chart(action,string):
 
 
 
+
 def get_scaler(env):
 	states=[]
+	last_action=0
 
 	for _ in range(env.n_step):
 		action = np.random.choice(env.action_space)
-		state,reward,done,info = env.step(action)
+		state,reward,done,info,stock_owneds = env.step(action,last_action)
 		states.append(state)
 		if done: 
 			break
 	scaler = StandardScaler()
 	scaler.fit(states)
+	last_action=action
 	return scaler
 
 def maybe_make_dir(directory):
@@ -128,6 +140,8 @@ class MultiStockEnv:
 		self.stock_owned = None
 		self.stock_price = None
 		self.cash_in_hand = None
+		self.last_day_stock_price=None
+		self.s = None
 
 		self.action_space = np.arange(3**self.n_stock)
 
@@ -153,13 +167,20 @@ class MultiStockEnv:
 		self.nepse=self.nepse_history[self.cur_step]
 		return self._get_obs() #state function
 
-	def step(self,action):
+	def step(self,action,last_action):
 		assert action in self.action_space #action exiists in our action space
+		#print(last_action)
+		#print(action)
+		
+		#print("--------------------")
 
 		prev_val = self._get_val(action) #current value to prev val
+		stocks_in_portfolio= self.stock_owned
+		self.last_day_stock_price=self.stock_price
 
 		self.cur_step += 1 #next day and update
 		self.stock_price = self.stock_price_history[self.cur_step]
+
 		self.nepse=self.nepse_history[self.cur_step]
 
 		#calling the trade
@@ -169,13 +190,40 @@ class MultiStockEnv:
 
 		cur_val = self._get_val(action)
 
-		reward = cur_val - prev_val
+		reward=self.reward_function(action,last_action,prev_val,cur_val)
+		#reward=cur_val-prev_val
 
 		done = self.cur_step == self.n_step - 1
 
 		info = {'cur_val': cur_val}
 
-		return self._get_obs(), reward, done , info 
+		return self._get_obs(), reward, done , info ,self.stock_owned
+
+	def reward_function(self,action,last_action,prev_val,cur_val):
+		#0 is sell 2 is buy
+
+
+
+
+		#print(self.s)
+
+		#these are the real rewards
+
+		reward = cur_val-prev_val
+
+		#the below rewards is just for penalizing the bot to not do these things
+
+
+
+
+
+
+
+
+		return reward
+
+
+
 
 	def _get_obs(self):
 		#state and obs are same in this context
@@ -249,10 +297,10 @@ class DQNAgent(object):
         self.action_size = action_size
         self.memory = deque(maxlen=3000)
         
-        self.gamma = 0.95    # discount rate
+        self.gamma = 0.99    # discount rate
         self.epsilon = 1 # exploration rate
         self.epsilon_min = 0.08
-        self.epsilon_decay = 0.99 # change this to 0.999
+        self.epsilon_decay = 0.999 # change this to 0.999
         self.batch_size = 32
         self.train_start = 2000
         self.lost=[]
@@ -267,14 +315,29 @@ class DQNAgent(object):
         	if self.epsilon > self.epsilon_min:
         		self.epsilon *= self.epsilon_decay
 
-    def act(self, state):
-    	
+    def act(self, state,stock_owned):
+    	#0 sell ,,, 2 buy 
     	if np.random.rand() <= self.epsilon:
+    		action=np.random.choice(self.action_size)
+    		if stock_owned>0:
+    			if action==2:
+    				self.act(state,stock_owned)
+    		if stock_owned==0:
+    			if action==0:
+    				self.act(state,stock_owned)
+
     		return np.random.choice(self.action_size)
     	else:
     		act_values = self.model.predict(state)
+    		action_sort=np.argsort(act_values[0])
+    		action=action_sort[-1]
+ 
+
     		
-    	return np.argmax(act_values[0])
+    	return action
+
+    
+
 
     def replay(self,state,action,reward,next_state,done):
     	
@@ -335,35 +398,41 @@ class DQNAgent(object):
     def save(self, name):
         self.model.save(name)
 
-accuracy_model=[]
 
 loss_model=[]
+accuracy_model=[]
 action_test=[]
+episode_value=[]
 def play_one_episode(agent, env, is_train,e):
 
 	state = env.reset()
 	action_test=[]
+	episode_value=[]
+
 	state = scaler.transform([state])
 	done = False
+	last_action=0
 	episode_reward=0
+	stock_owned=0
+
 	
 
 	while not done:
-		action = agent.act(state)
+		action = agent.act(state,stock_owned)
 		state
-		next_state, reward, done, info = env.step(action)
+		next_state, reward, done, info,stock_owned= env.step(action,last_action)
 		next_state = scaler.transform([next_state])
 		history=agent.replay(state,action,reward,next_state,done)
 		agent.remember(state,action,reward,next_state,done)
 		
 		action_test.append(action)
+		episode_value.append(info['cur_val'])
+		last_action=action
 		episode_reward+=reward
-
 
 		state=next_state
 
 			
-
 
 
 		if done==1 and e>=2 and is_train=='train': 
@@ -378,7 +447,13 @@ def play_one_episode(agent, env, is_train,e):
 			loss_model.append(mean)
 			accuracy_model.append(mean_accuracy)
 
+			#print(agent.lost)
+
 	action_test.append(action)
+	episode_value.append(info['cur_val'])
+
+	if is_train=='test':
+		save_csv(episode_value,action_test)
 
 
 
@@ -386,15 +461,53 @@ def play_one_episode(agent, env, is_train,e):
 
 
 
-	return {'info': info['cur_val'], 'loss':loss_model, 'action_test':action_test,'episode_reward':episode_reward,'accuracy':accuracy_model}
+	return {'info': info['cur_val'], 'loss':loss_model, 'action_test':action_test,'episode_reward':episode_reward,'accuracy':accuracy_model,'episode_value':episode_value}
+
+
+def save_csv(episode_value,action_test):
+		import pandas as pd
+		data = get_data()
+		n_timesteps, n_stock = data.shape #n_stock or n_stocks
+		data_nep= get_nepse_data()
+		train_data_nepse, test_data_nepse= train_test_split(data_nep, test_size=0.5,random_state = 42,shuffle=False) #nepse data split
+		train_data, test_data= train_test_split(data, test_size=0.5,random_state = 42,shuffle=False)
+		
+		test_data_nepse = list(test_data_nepse)
+		
+		test_data= list(test_data)
+		
+		def Extract(lst):
+			return list(list(zip(*lst))[0])
+		test_data_nepse=Extract(test_data_nepse)
+		test_data= Extract(test_data)    
+
+
+		     
+		# dictionary of lists   
+		dict = {'Episode End Value':episode_value , 'action':action_test, 'Nepse Data':test_data_nepse,'Stock price':test_data}   
+		       
+		df = pd.DataFrame(dict) 
+		s= episode_value[-1]
+		s=str(s)
+		    
+		# saving the dataframe  
+		df.to_csv('%s.csv' %s)  
+		
+		files.download('%s.csv' %s) 
+
+		
+
+
+
+
 
 if __name__ == '__main__':
 
 	models_folder = 'linear_rl_trader_models'
 	rewards_folder = 'linear_rl_trader_rewards'
-	num_episodes = 80
+	num_episodes = 60
 	
-	initial_investment = 2000
+	initial_investment = 20000
 
 	parser = argparse.ArgumentParser()
 	parser.add_argument('-m','--mode', type = str ,required = True,
@@ -427,7 +540,7 @@ if __name__ == '__main__':
 
 
 	if args.mode == 'test': 
-		num_episodes = 4
+		num_episodes = 2
 		agent.load(f'{models_folder}')
 
 		env = MultiStockEnv(test_data,test_data_nepse, initial_investment)
@@ -438,11 +551,12 @@ if __name__ == '__main__':
 			t0 = datetime.now()
 			val = play_one_episode(agent,env,args.mode,e)
 			dt = datetime.now() - t0
-			print(f"episode: {e+1}/{num_episodes}, episode end value: {val['info']:.2f},duration:{dt}")
+			print(f"episode: {e+1}/{num_episodes}, episode end value: {val['info']:.2f},duration:{dt},reward:{val['episode_reward']},accuracy is:{val['loss']}")
 			portfolio_value.append(val['info'])
+			test_action_chart(val['action_test'],"test")
 
 
-		test_action_chart(val['action_test'],"test")
+		
 		
 
 
@@ -459,14 +573,27 @@ if __name__ == '__main__':
 			t0 = datetime.now()
 			val = play_one_episode(agent,env,args.mode,e)
 			dt = datetime.now() - t0
-			print(f"episode: {e+1}/{num_episodes}, episode end value: {val['info']:.2f},duration:{dt},accuracy is:{val['accuracy']},loss is:{val['loss']} ")
+			print(f"episode: {e+1}/{num_episodes}, episode end value: {val['info']:.2f},duration:{dt},reward:{val['episode_reward']},loss is:{val['loss']},accuracy is: {val['accuracy']}")
 			portfolio_value.append(val['info'])
-			if (e+1) % 10==0:
+			if (e+1) % 4==0:
 				test_action_chart(val['action_test'],"train")
-		print("loss is :")
 
 
-		print(val['loss'])
+
+		print("The plot for accuracy is ")
+		
+
+		plt.plot(val['accuracy'])
+
+		plt.show()
+
+		print("The plot for loss is ")
+
+		plt.plot(val['loss'])
+		plt.show()
+
+
+
 
 		print("Now testing.")
 
@@ -476,6 +603,14 @@ if __name__ == '__main__':
 		agent_epsilon = 0.08
 		num_episodes = 4
 		args.mode = 'test'
+
+		#undo the blow hash to get new nepse data for march till february 
+
+		#test_data=get_new_data()
+		#test_data_nepse = get_new_nepse()
+
+
+
 		env = MultiStockEnv(test_data,test_data_nepse, initial_investment)
 
 
@@ -485,20 +620,44 @@ if __name__ == '__main__':
 			dt = datetime.now() - t0
 			print(f"episode: {e+1}/{num_episodes}, episode end value: {val['info']:.2f},duration:{dt}")
 
-		test_action_chart(val['action_test'],"test")
+			test_action_chart(val['action_test'],"test")
 
-		print("The plot for accuracy is ")
 
-		plt.plot(val['accuracy'])
+		a = val['action_test'][-1]
 
-		plt.show()
-		savefig('accuracy.png')
+		print("On Feb 22, 2021")
 
-		print("The plot for loss is ")
+		if(a==0):
+			print("Our Model suggests you to Sell your position in NLIC ")
+		elif(a==1):
+			print("Our Model suggests you to Hold your position in NLIC")
+		else:
+			print("Our Model suggests you to Buy a position in NLIC ")
 
-		plt.plot(val['loss'])
-		plt.show()
-		savefig('loss.png')
+		
+		
+		import pandas as pd
+		test_data_nepse = list(test_data_nepse)
+		test_data= list(test_data)
+		def Extract(lst):
+			return list(list(zip(*lst))[0])
+		test_data_nepse=Extract(test_data_nepse)
+		test_data= Extract(test_data)    
+
+
+		     
+		# dictionary of lists   
+		#dict = {'Episode End Value':val['episode_value'] , 'action':val['action_test'], 'Nepse Data':test_data_nepse,'Stock price':test_data}   
+		       
+		#df = pd.DataFrame(dict)  
+		    
+		# saving the dataframe  
+		#df.to_csv('GFG.csv')  
+		
+		#files.download('GFG.csv')
+
+		files.download('linear_rl_trader_models')
+		files.download('linear_rl_trader_rewards')
 
 
 
